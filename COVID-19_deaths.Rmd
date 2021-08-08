@@ -1,0 +1,472 @@
+---
+title: "COVID-19"
+author: "Aimee Ouyang"
+date: "8/7/2021"
+output: html_document
+---
+
+### import data 
+
+```{r}
+library(tidyverse)
+covid <- read.csv("covidDataOutput.csv")    # load files
+covid <- covid[,c(2:3,6,8)]    # select deaths and deaths
+covid$date <- gsub("2021-([0-9,-]+) .*", "\\1", covid$date)
+covid <- as.data.frame(t(covid))    # change col and row
+names(covid) <- as.matrix(covid[2, ])    #set the time line to header
+covid <- as.data.frame(t(covid))    # change col and row
+covid[] <- lapply(covid, function(x) type.convert(as.character(x)))
+```
+
+```{r}
+# create a table display deaths information
+deaths <- covid[,c(1:2,4)]
+first <- deaths[1:31,]
+for (i in (1:(nrow(deaths)/31))) {
+ second <- deaths[(i*31+1):((i+1)*31),]
+ first <- cbind(first, second)
+} 
+selected <- seq(3,605,3)
+deaths <- data.frame(x=first[,selected])
+names(deaths) <- c("AFG", "AGO", "ALB", "AND", "ARE", "ARG", "ARM", "ASM", "ATG", "AUS", "AUT", "AZE", "BDI", "BEL", "BEN", "BFA", "BGD", "BGR", "BHR", "BHS", "BIH", "BLR", "BLZ", "BMU", "BOL", "BRA", "BRB", "BRN", "BTN", "BWA", "CAC", "CAF", "CAN", "CHE", "CHL", "CHN", "CIV", "CMR", "COD", "COG", "COL", "COM", "CPV", "CRI", "CUB", "CYP", "CZE", "DEU", "DJI", "DMA", "DNK", "DOM", "DPC", "DZA", "ECU", "EGY", "ERI", "ESP", "EST", "ETH", "FIN", "FJI", "FRA", "GAB", "GBR", "GEO", "GHA", "GIN", "GMB", "GNB", "GNQ", "GPC", "GRC", "GRD", "GTM", "GUM", "GUY", "HND", "HRV", "HTI", "HUN", "IDN", "IND", "IRL", "IRN", "IRQ", "ISL", "ISR", "ITA", "JAM", "JOR", "JPN", "KAZ", "KEN", "KGZ", "KHM", "KIR", "KNA", "KOR", "KWT", "LAO", "LBN", "LBR", "LBY", "LCA", "LIE", "LKA", "LSO", "LTU", "LUX", "LVA", "MAR", "MCO", "MDA", "MDG", "MDV", "MEX", "MHL", "MKD", "MLI", "MLT", "MMR", "MNE", "MNG", "MNP", "MOZ", "MRT", "MSZ", "MUS", "MWI", "MYS", "NAM", "NER", "NGA", "NIC", "NLD", "NOR", "NPL", "NZL", "OMN", "PAK", "PAN", "PER", "PHL", "PLW", "PNG", "POL", "PRI", "PRT", "PRY", "PSE", "QAT", "RKS", "ROU", "RUS", "RWA", "SAU", "SDN", "SEN", "SGP", "SLB", "SLE", "SLV", "SMR", "SOM", "SRB", "SSD", "STP", "SUR", "SVK", "SVN", "SWE", "SWZ", "SYC", "SYR", "TCD", "TGO", "THA", "TJK", "TLS", "TTO", "TUN", "TUR", "TWN", "TZA", "UGA", "UKR", "URY", "USA", "UZB", "VAT", "VCT", "VEN", "VIR", "VNM", "VUT", "WSM", "YEM", "ZAF", "ZMB","ZWE")
+deaths <- as.data.frame(t(deaths))    # change col and row
+deaths <- deaths[complete.cases(deaths),]    # remove all the NAs
+names(deaths) <- c("X01", "X02", "X03", "X04", "X05", "X06", "X07", "X08", "X09", "X10", "X11", "X12", "X13", "X14", "X15", "X16", "X17", "X18", "X19", "X20", "X21", "X22", "X23", "X24", "X25", "X26", "X27", "X28", "X29", "X30", "X31")
+```
+
+```{r}
+# Random shuffle data, and set 70% train 30% test. 
+set.seed(58)
+rows <- sample(nrow(deaths))
+deaths <- deaths[rows, ]
+
+deaths_train <- deaths[1:131,]
+deaths_test <- deaths[132:187,]
+```
+
+### Random Forests
+
+```{r include=FALSE}
+library(randomForest)
+```
+
+```{r}
+# create a random forest with 100 trees, at most 10 nodes in the tree, and consider 5 vaiables in each node. 
+set.seed(58)
+rf_model <- randomForest(X31 ~ .
+                    , data = deaths_train
+                    , mtry = 5
+                    , maxnods = 10
+                    , ntree = 100 
+                    , importance = TRUE
+                    , type = "prob")
+rf_model
+```
+
+```{r}
+# find the importance of attributes
+varImpPlot(rf_model)
+```
+
+```{r}
+# prediction result
+deaths_test$pred_rf <- predict(rf_model, newdata = deaths_test)
+```
+
+```{r}
+library(Metrics)    # library for using rmse()
+rf_rmse <- rmse(deaths_test$X31, deaths_test$pred_rf)
+```
+
+
+### Gradient Boosting
+
+```{r}
+# Helper packages
+library(dplyr)    # for general data wrangling needs
+
+# Modeling packages
+library(gbm)      # for original implementation of regular and stochastic GBMs
+library(h2o)      # for a java-based implementation of GBM variants
+library(xgboost)  # for fitting extreme gradient boosting
+```
+
+```{r}
+# create a gradient boosting with specified shrinkage and n.trees evluated below
+# After evluation, we choose 4950 number of trees and 0.1 learning rate (shrinkage) with 10 cross-validation, at least 7 obervations, and 5 number of splits in each terminal node. 
+set.seed(58)  # for reproducibility
+ames_gbm1 <- gbm(
+  formula = X31 ~ .,
+  data = deaths_train,
+  distribution = "gaussian",  # SSE loss function
+  n.trees = 4950,
+  shrinkage = 0.1,
+  interaction.depth = 5,
+  n.minobsinnode = 5,
+  cv.folds = 10
+)
+
+# find index for number trees with minimum CV error
+best <- which.min(ames_gbm1$cv.error)
+
+# get MSE and compute RMSE
+gb_rmse <- sqrt(ames_gbm1$cv.error[best])
+```
+
+```{r}
+# create grid search
+hyper_grid <- expand.grid(
+  learning_rate = c(0.3, 0.1, 0.05, 0.01, 0.005),
+  RMSE = NA,
+  trees = NA,
+  time = NA
+)
+
+# execute grid search
+for(i in seq_len(nrow(hyper_grid))) {
+
+  # fit gbm
+  set.seed(123)  # for reproducibility
+  train_time <- system.time({
+    m <- gbm(
+      formula = X31 ~ .,
+      data = deaths_train,
+      distribution = "gaussian",
+      n.trees = 5000, 
+      shrinkage = hyper_grid$learning_rate[i], 
+      interaction.depth = 3, 
+      n.minobsinnode = 10,
+      cv.folds = 10 
+   )
+  })
+  
+  # add SSE, trees, and training time to results
+  hyper_grid$RMSE[i]  <- sqrt(min(m$cv.error))
+  hyper_grid$trees[i] <- which.min(m$cv.error)
+  hyper_grid$Time[i]  <- train_time[["elapsed"]]
+
+}
+
+# results
+arrange(hyper_grid, RMSE)
+```
+A learning rate of 0.100 sufficiently minimizes our loss function and requires 642 trees
+
+```{r}
+# search grid
+hyper_grid <- expand.grid(
+  n.trees = 642,
+  shrinkage = 0.100,
+  interaction.depth = c(3, 5, 7),
+  n.minobsinnode = c(5, 10, 15)
+)
+
+# create model fit function
+model_fit <- function(n.trees, shrinkage, interaction.depth, n.minobsinnode) {
+  set.seed(123)
+  m <- gbm(
+    formula = X31 ~ .,
+    data = deaths_train,
+    distribution = "gaussian",
+    n.trees = n.trees,
+    shrinkage = shrinkage,
+    interaction.depth = interaction.depth,
+    n.minobsinnode = n.minobsinnode,
+    cv.folds = 10
+  )
+  # compute RMSE
+  sqrt(min(m$cv.error))
+}
+
+# perform search grid with functional programming
+hyper_grid$rmse <- purrr::pmap_dbl(
+  hyper_grid,
+  ~ model_fit(
+    n.trees = ..1,
+    shrinkage = ..2,
+    interaction.depth = ..3,
+    n.minobsinnode = ..4
+    )
+)
+
+# results
+arrange(hyper_grid, rmse)
+```
+When the interaction.depth = 5 and n.minobsinode = 5, we obtained the smallest rmse. 
+
+```{r}
+# find the importance of attribute used in this model
+summary(m)    
+```
+
+```{r}
+n.trees = seq(from=650 ,to=5000, by=50) #no of trees-a vector of 100 values 
+
+#Generating a Prediction matrix for each Tree
+predmatrix<-predict(m,deaths_test,n.trees = n.trees)
+dim(predmatrix) #dimentions of the Prediction Matrix
+
+#Calculating The Mean squared Test Error
+test.error<-with(deaths_test,apply( (predmatrix-X31)^2,2,mean))
+head(test.error) #contains the Mean squared test error for each of the 100 trees averaged
+
+#Plotting the test error vs number of trees
+
+plot(n.trees , test.error , pch=19,col="blue",xlab="Number of Trees",ylab="Test Error", main = "Perfomance of Boosting on Test Set")
+
+#adding the RandomForests Minimum Error line trained on same data and similar parameters
+abline(h = min(test.error),col="red") #test.err is the test error of a Random forest fitted on same data
+legend("topright",c("Minimum Test error Line for Gradient Boosting"),col="red",lty=1,lwd=1)
+```
+From the graph, using 400 decision trees provides the lowest mean squared test error. 
+
+### K-Nearest Neighbor Regression (KNN) 
+
+```{r}
+library('class')
+```
+
+```{r}
+# build a k-NN model with 6 nearest neighbors and make predictions
+set.seed(58)
+deaths_test$kn <- knn(deaths_train[,1:30], deaths_test[,1:30], deaths_train$X31, k=6)
+deaths_test$kn <- as.character(deaths_test$kn)
+deaths_test$kn <- as.numeric(deaths_test$kn)
+kn_rmse <- rmse(deaths_test$X31, deaths_test$kn)
+```
+
+### LASSO
+
+```{r}
+# load packages
+library(data.table) # used for reading and manipulation of data
+library(dplyr)	 # used for data manipulation and joining
+library(glmnet)	 # used for regression
+library(ggplot2) # used for ploting
+library(caret)	 # used for modeling
+library(xgboost) # used for building XGBoost model
+library(e1071)	 # used for skewness
+library(cowplot) # used for combining multiple plots
+```
+
+```{r}
+# Model Building :Lasso Regression
+set.seed(123)
+control = trainControl(method ="cv", number = 5)
+Grid_la_reg = expand.grid(alpha = 1,
+			lambda = seq(0.001, 0.1, by = 0.0002))
+
+# Training lasso regression model
+lasso_model = train(x = deaths_train[,1:30],
+					y = deaths_train$X31,
+					method = "glmnet",
+					trControl = control
+					)
+lasso_model
+
+# mean validation score
+lasso_rmse <- mean(lasso_model$resample$RMSE)
+
+# Plot
+plot(lasso_model, main = "Lasso Regression")
+```
+
+### Ridge
+
+```{r}
+library(lmridge)
+```
+
+```{r}
+# build a ridge regression model and make prediction
+ridge_model <- lmridge(X31 ~ ., deaths_train)
+deaths_test$ri <- predict(ridge_model, deaths_test)
+ri_rmse <- rmse(deaths_test$X31, deaths_test$ri)
+```
+
+### Elastic Net
+
+```{r}
+set.seed(42)
+cv_5 = trainControl(method = "cv", number = 5)
+```
+
+```{r}
+# build a elastic net
+elnet = train(
+  X31 ~ ., data = deaths_train,
+  method = "glmnet",
+  trControl = cv_5
+)
+
+elnet_int = train(
+  X31 ~ . ^ 2, data = deaths_train,
+  method = "glmnet",
+  trControl = cv_5,
+  tuneLength = 10
+)
+```
+
+```{r}
+# find out the best result
+get_best_result = function(caret_fit) {
+  best = which(rownames(caret_fit$results) == rownames(caret_fit$bestTune))
+  best_result = caret_fit$results[best, ]
+  rownames(best_result) = NULL
+  best_result
+}
+
+result <- get_best_result(elnet_int)
+en_rmse <- result$RMSE
+```
+
+### Result
+```{r}
+result <- data.frame(name = c("rf_rmse","gb_rmse","kn_rmse","lasso_rmse","ri_rmse","en_rmse"), 
+                     rmse = c(rf_rmse,gb_rmse, kn_rmse,lasso_rmse,ri_rmse,en_rmse))
+result[order(result[,1],decreasing=TRUE),]
+```
+Ridge regression model provides the smallest rmse 62.97624.
+
+```{r}
+# build a ridge regression model and make prediction for day one
+ridge_model <- lmridge(X31 ~ ., deaths)
+deaths$one <- predict(ridge_model, deaths)
+deaths$one <- round(deaths$one)
+for (i in 1:187){
+  if (deaths$one[i] < deaths$X31[i]) {
+    deaths$one[i] <- deaths$X31[i]
+  }
+}
+```
+
+```{r}
+# day two
+ridge_model <- lmridge(one ~ ., deaths)
+deaths$two <- predict(ridge_model, deaths)
+deaths$two <- round(deaths$two)
+for (i in 1:187){
+  if (deaths$two[i] < deaths$one[i]) {
+    deaths$two[i] <- deaths$one[i]
+  }
+}
+```
+
+```{r}
+# day three
+ridge_model <- lmridge(two ~ ., deaths)
+deaths$three <- predict(ridge_model, deaths)
+deaths$three <- round(deaths$three)
+for (i in 1:187){
+  if (deaths$three[i] < deaths$two[i]) {
+    deaths$three[i] <- deaths$two[i]
+  }
+}
+```
+
+```{r}
+# day four
+ridge_model <- lmridge(three ~ ., deaths)
+deaths$four <- predict(ridge_model, deaths)
+deaths$four <- round(deaths$four)
+for (i in 1:187){
+  if (deaths$four[i] < deaths$three[i]) {
+    deaths$four[i] <- deaths$three[i]
+  }
+}
+```
+
+```{r}
+# day five
+ridge_model <- lmridge(four ~ ., deaths)
+deaths$five <- predict(ridge_model, deaths)
+deaths$five <- round(deaths$five)
+for (i in 1:187){
+  if (deaths$five[i] < deaths$four[i]) {
+    deaths$five[i] <- deaths$four[i]
+  }
+}
+```
+
+
+```{r}
+# Write data to txt file: tab separated values
+# sep = "\t"
+write.table(deaths, file = "deaths.txt", sep = "\t",
+            row.names = TRUE, col.names = NA)
+# Write data to csv files:  
+# decimal point = "." and value separators = comma (",")
+write.csv(deaths, file = "deaths.csv")
+# Write data to csv files: 
+# decimal point = comma (",") and value separators = semicolon (";")
+write.csv2(deaths, file = "deaths.csv")
+```
+
+### Map 
+
+```{r}
+# load packages
+library(janitor)
+library(tidyr)
+library(tidyverse)
+```
+
+```{r}
+deaths[] <- lapply(deaths, function(x) type.convert(as.numeric(x)))
+deaths$name <- rownames(deaths)
+```
+
+```{r}
+joinData <- joinCountryData2Map( deaths,
+                                 joinCode = "ISO3",
+                                 nameJoinColumn = "name")
+theMap <- mapCountryData( joinData, nameColumnToPlot="X31", addLegend=FALSE, mapTitle = "Current Deaths Cases")
+do.call( addMapLegend, c(theMap, legendWidth=1, legendMar = 2))
+```
+
+```{r}
+populationData <- deaths$one
+joinData <- joinCountryData2Map( deaths,
+                                 joinCode = "ISO3",
+                                 nameJoinColumn = "name")
+theMap <- mapCountryData( joinData, nameColumnToPlot="one", addLegend=FALSE, mapTitle = "Day 1 Forcast - Deaths Cases")
+do.call( addMapLegend, c(theMap, legendWidth=1, legendMar = 2))
+```
+
+```{r}
+populationData <- deaths$two
+joinData <- joinCountryData2Map( deaths,
+                                 joinCode = "ISO3",
+                                 nameJoinColumn = "name")
+theMap <- mapCountryData( joinData, nameColumnToPlot="two", addLegend=FALSE, mapTitle = "Day 2 Forcast - Deaths Cases")
+do.call( addMapLegend, c(theMap, legendWidth=1, legendMar = 2))
+```
+
+```{r}
+populationData <- deaths$three
+joinData <- joinCountryData2Map( deaths,
+                                 joinCode = "ISO3",
+                                 nameJoinColumn = "name")
+theMap <- mapCountryData( joinData, nameColumnToPlot="three", addLegend=FALSE, mapTitle = "Day 3 Forcast - Deaths Cases")
+do.call( addMapLegend, c(theMap, legendWidth=1, legendMar = 2))
+```
+
+```{r}
+populationData <- deaths$four
+joinData <- joinCountryData2Map( deaths,
+                                 joinCode = "ISO3",
+                                 nameJoinColumn = "name")
+theMap <- mapCountryData( joinData, nameColumnToPlot="four", addLegend=FALSE, mapTitle = "Day 4 Forcast - Deaths Cases")
+do.call( addMapLegend, c(theMap, legendWidth=1, legendMar = 2))
+```
+
+```{r}
+populationData <- deaths$five
+joinData <- joinCountryData2Map( deaths,
+                                 joinCode = "ISO3",
+                                 nameJoinColumn = "name")
+theMap <- mapCountryData( joinData, nameColumnToPlot="five", addLegend=FALSE, mapTitle = "Day 5 Forcast - Deaths Cases")
+do.call( addMapLegend, c(theMap, legendWidth=1, legendMar = 2))
+```
+
+### end
